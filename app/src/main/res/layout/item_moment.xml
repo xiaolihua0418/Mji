@@ -53,15 +53,60 @@
             android:textSize="15sp"
             android:visibility="gone" />
 
-        <!-- ⚡ 老板专属：挂真图的极其高贵的相框！！ -->
-        <ImageView
-            android:id="@+id/ivMomentRealImage"
+        <!-- ⚡ 老板专属：挂真图的极其高贵的相框！！单张图/视频时用（包在 FrameLayout 里 overlay 播放按钮）-->
+        <FrameLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
-            android:maxHeight="200dp"
-            android:adjustViewBounds="true"
-            android:scaleType="centerCrop"
+            android:visibility="gone"
+            android:id="@+id/layoutMomentSingleMedia">
+
+            <ImageView
+                android:id="@+id/ivMomentRealImage"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:maxHeight="200dp"
+                android:adjustViewBounds="true"
+                android:scaleType="centerCrop" />
+
+            <!-- 单视频的播放按钮 -->
+            <ImageView
+                android:id="@+id/ivMomentRealImagePlay"
+                android:layout_width="42dp"
+                android:layout_height="42dp"
+                android:layout_gravity="center"
+                android:src="@android:drawable/ic_media_play"
+                android:tint="#FFFFFF"
+                android:background="#80000000"
+                android:padding="8dp"
+                android:visibility="gone" />
+
+            <!-- 单视频的时长 -->
+            <TextView
+                android:id="@+id/tvMomentRealImageDuration"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="bottom|end"
+                android:layout_margin="6dp"
+                android:background="#80000000"
+                android:paddingStart="6dp"
+                android:paddingEnd="6dp"
+                android:paddingTop="2dp"
+                android:paddingBottom="2dp"
+                android:textColor="#FFFFFF"
+                android:textSize="11sp"
+                android:visibility="gone" />
+
+        </FrameLayout>
+
+        <!-- ⚡ 多张图九宫格，2-9 张时用 -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/rvMomentImages"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:nestedScrollingEnabled="false"
+            android:overScrollMode="never"
             android:visibility="gone" />
 
         <!-- ⚡ AI专属：画面描述的小黑板 -->

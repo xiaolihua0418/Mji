@@ -1,0 +1,81 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:layout_margin="4dp">
+
+    <!-- 已选图片/视频预览 -->
+    <ImageView
+        android:id="@+id/ivPicked"
+        android:layout_width="100dp"
+        android:layout_height="100dp"
+        android:background="#F0F0F0"
+        android:scaleType="centerCrop" />
+
+    <!-- ⭐ 视频播放按钮（仅视频显示） -->
+    <ImageView
+        android:id="@+id/ivPlay"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_gravity="center"
+        android:src="@android:drawable/ic_media_play"
+        android:tint="#FFFFFF"
+        android:background="#80000000"
+        android:padding="6dp"
+        android:visibility="gone" />
+
+    <!-- ⭐ 视频时长（仅视频显示） -->
+    <TextView
+        android:id="@+id/tvDuration"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="4dp"
+        android:background="#80000000"
+        android:paddingStart="6dp"
+        android:paddingEnd="6dp"
+        android:paddingTop="2dp"
+        android:paddingBottom="2dp"
+        android:textColor="#FFFFFF"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
+    <!-- 添加按钮样式：灰底 + 相机图标，居中 -->
+    <LinearLayout
+        android:id="@+id/layoutAdd"
+        android:layout_width="100dp"
+        android:layout_height="100dp"
+        android:background="#F0F0F0"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <ImageView
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:src="@android:drawable/ic_menu_camera"
+            android:tint="#999999" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:text="添加"
+            android:textColor="#999999"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <!-- 删除按钮，仅已选图片/视频显示 -->
+    <ImageView
+        android:id="@+id/ivDelete"
+        android:layout_width="22dp"
+        android:layout_height="22dp"
+        android:layout_gravity="end|top"
+        android:layout_margin="2dp"
+        android:background="#80000000"
+        android:padding="2dp"
+        android:src="@android:drawable/ic_menu_close_clear_cancel"
+        android:tint="#FFFFFF"
+        android:visibility="gone" />
+
+</FrameLayout>

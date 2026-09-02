@@ -6,12 +6,17 @@ import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
 import android.widget.EditText
 import android.widget.ImageView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.GridLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import android.content.Intent
 import com.yalantis.ucrop.UCrop
 import okhttp3.*
@@ -23,29 +28,40 @@ import java.io.File
 import java.util.concurrent.TimeUnit
 
 class AddMomentActivity : AppCompatActivity() {
-    private var selectedImageUri: Uri? = null
+    companion object {
+        private const val MAX_MEDIA = 9        // 支持图片+视频混发，总数上限9
+        private const val IMG_SEPARATOR = "|||"
+    }
+
+    // 统一存 Media：区分图片/视频；视频不裁剪，直接拷贝到 filesDir
+    private val selectedMedia = mutableListOf<MomentMedia>()
+    private lateinit var imageAdapter: AddImageAdapter
+    // 记录已选对应的原始 Uri（预览用，拷贝完就落盘成持久化 path）
+
     private val cropImage = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == RESULT_OK) {
             val data = result.data ?: return@registerForActivityResult
             val resultUri = UCrop.getOutput(data)
             if (resultUri != null) {
-                selectedImageUri = resultUri
-                try {
-                    val inputStream = contentResolver.openInputStream(resultUri)
-                    val bitmap = android.graphics.BitmapFactory.decodeStream(inputStream)
-                    findViewById<ImageView>(R.id.ivSelectImage).setImageBitmap(bitmap)
-                    inputStream?.close()
-                } catch (e: Exception) {
-                    Toast.makeText(this, "\u56fe\u7247\u9884\u89c8\u5931\u8d25", Toast.LENGTH_SHORT).show()
+                if (selectedMedia.size < MAX_MEDIA) {
+                    // 裁剪后图片：拷贝到 filesDir
+                    val persistPath = persistUriToInternalFile(this, resultUri, "jpg")
+                    selectedMedia.add(MomentMedia(MomentMedia.Type.IMAGE, persistPath))
+                    imageAdapter.notifyDataSetChanged()
                 }
             } else {
-                Toast.makeText(this, "\u56fe\u7247\u88c1\u526a\u5931\u8d25", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "图片裁剪失败", Toast.LENGTH_SHORT).show()
             }
         }
     }
+
     private val pickImage = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
-            val destUri = Uri.fromFile(File(filesDir, "moment_${System.currentTimeMillis()}.jpg"))
+            if (selectedMedia.size >= MAX_MEDIA) {
+                Toast.makeText(this, "最多只能发 $MAX_MEDIA 个媒体啦", Toast.LENGTH_SHORT).show()
+                return@registerForActivityResult
+            }
+            val destUri = Uri.fromFile(File(filesDir, "moment_crop_${System.currentTimeMillis()}.jpg"))
             val options = UCrop.Options()
             options.setFreeStyleCropEnabled(true)
             options.setToolbarTitle("裁剪配图")
@@ -54,15 +70,74 @@ class AddMomentActivity : AppCompatActivity() {
         }
     }
 
+    private val pickVideo = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            if (selectedMedia.size >= MAX_MEDIA) {
+                Toast.makeText(this, "最多只能发 $MAX_MEDIA 个媒体啦", Toast.LENGTH_SHORT).show()
+                return@registerForActivityResult
+            }
+            try {
+                // 视频直接拷贝到 filesDir，不要裁剪
+                val ext = when (contentResolver.getType(uri)?.lowercase()) {
+                    "video/quicktime" -> "mov"
+                    "video/webm" -> "webm"
+                    "video/3gpp" -> "3gp"
+                    else -> "mp4"
+                }
+                val persistPath = persistUriToInternalFile(this, uri, ext)
+                if (File(persistPath).exists() && File(persistPath).length() > 0) {
+                    selectedMedia.add(MomentMedia(MomentMedia.Type.VIDEO, persistPath))
+                    imageAdapter.notifyDataSetChanged()
+                    Toast.makeText(this, "✅ 视频已添加（${formatDuration(getVideoDurationSec(Uri.fromFile(File(persistPath)), this))}）", Toast.LENGTH_SHORT).show()
+                } else {
+                    Toast.makeText(this, "视频拷贝失败", Toast.LENGTH_SHORT).show()
+                }
+            } catch (e: Exception) {
+                Toast.makeText(this, "添加视频失败：${e.message}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_add_moment)
         findViewById<TextView>(R.id.btnCancel).setOnClickListener { finish() }
-        findViewById<ImageView>(R.id.ivSelectImage).setOnClickListener { pickImage.launch(arrayOf("image/*")) }
+
+        val rvImages = findViewById<RecyclerView>(R.id.rvAddImages)
+        rvImages.layoutManager = GridLayoutManager(this, 3)
+        imageAdapter = AddImageAdapter(selectedMedia,
+            onAddImageClick = {
+                if (selectedMedia.size >= MAX_MEDIA) {
+                    Toast.makeText(this, "最多只能发 $MAX_MEDIA 个媒体啦", Toast.LENGTH_SHORT).show()
+                } else {
+                    pickImage.launch(arrayOf("image/*"))
+                }
+            },
+            onAddVideoClick = {
+                if (selectedMedia.size >= MAX_MEDIA) {
+                    Toast.makeText(this, "最多只能发 $MAX_MEDIA 个媒体啦", Toast.LENGTH_SHORT).show()
+                } else {
+                    pickVideo.launch(arrayOf("video/*"))
+                }
+            },
+            onDeleteClick = { pos ->
+                if (pos in selectedMedia.indices) {
+                    // 删除时顺便删掉 filesDir 内持久化的文件（不占空间）
+                    try {
+                        val f = File(selectedMedia[pos].path)
+                        if (f.exists()) f.delete()
+                    } catch (e: Exception) {}
+                    selectedMedia.removeAt(pos)
+                    imageAdapter.notifyDataSetChanged()
+                }
+            }
+        )
+        rvImages.adapter = imageAdapter
+
         findViewById<TextView>(R.id.btnPublish).setOnClickListener {
             val content = findViewById<EditText>(R.id.etMomentContent).text.toString().trim()
-            if (content.isEmpty() && selectedImageUri == null) {
-                Toast.makeText(this, "老板，好歹写点字或发张图吧！", Toast.LENGTH_SHORT).show()
+            if (content.isEmpty() && selectedMedia.isEmpty()) {
+                Toast.makeText(this, "老板，好歹写点字或发张图/视频吧！", Toast.LENGTH_SHORT).show()
                 return@setOnClickListener
             }
             var myId = "my_id"
@@ -82,22 +157,8 @@ class AddMomentActivity : AppCompatActivity() {
 
                 // 🛑【已移除高危自毁行】：不再盲目 delete "Contacts" 表里的玩家数据，保住你的名字！
 
-                val finalImageDesc = if (selectedImageUri != null) {
-                    val uriStr = selectedImageUri.toString()
-                    val realPath = if (uriStr.startsWith("file://")) {
-                        uriStr.removePrefix("file://")
-                    } else {
-                        try {
-                            val fileName = "moment_${System.currentTimeMillis()}.jpg"
-                            val destFile = File(filesDir, fileName)
-                            contentResolver.openInputStream(selectedImageUri!!)?.use { input ->
-                                destFile.outputStream().use { output -> input.copyTo(output) }
-                            }
-                            destFile.absolutePath
-                        } catch (e: Exception) { uriStr }
-                    }
-                    "[REAL_IMG]$realPath"
-                } else ""
+                // 用 buildImageDesc 打包：I:path1|||V:path2|||...
+                val finalImageDesc = buildImageDesc(selectedMedia)
                 val values = ContentValues().apply {
                     put("aiId", myId) // 这里代表是由玩家自己发的朋友圈
                     put("content", content)
@@ -106,7 +167,16 @@ class AddMomentActivity : AppCompatActivity() {
                     put("timestamp", System.currentTimeMillis())
                 }
                 val newMomentId = writeDb.insertOrThrow("Moments", null, values)
-                Toast.makeText(this, "✅ 动态已上墙！正在后台挨个敲门查房...", Toast.LENGTH_LONG).show()
+                val mediaCountStr = buildString {
+                    val imgs = selectedMedia.count { it.type == MomentMedia.Type.IMAGE }
+                    val vids = selectedMedia.count { it.type == MomentMedia.Type.VIDEO }
+                    if (imgs > 0) append("${imgs}张图")
+                    if (vids > 0) {
+                        if (isNotEmpty()) append(" + ")
+                        append("${vids}个视频")
+                    }
+                }
+                Toast.makeText(this, "✅ 动态已上墙！${mediaCountStr} 正在后台挨个敲门查房...", Toast.LENGTH_LONG).show()
 
                 // 传入 myId 作为发帖人 ID (authorId)
                 notifyHarem(applicationContext, newMomentId.toInt(), content, finalImageDesc, myName, myId, myId)
@@ -158,6 +228,7 @@ class AddMomentActivity : AppCompatActivity() {
             .replace(Regex("【?(内心|评论|私聊)】?[：:]?"), "")
             .trim()
     }
+
     // 🌟 升级版通知函数：引入 authorId (发布动态的人的ID) 确保多角色生态关系正确
     private fun notifyHarem(context: Context, momentId: Int, momentContent: String, imageDesc: String, myName: String, myId: String, authorId: String) {
         val sharedPref = context.getSharedPreferences("AppConfig", Context.MODE_PRIVATE)
@@ -262,6 +333,17 @@ class AddMomentActivity : AppCompatActivity() {
 
 朋友圈发布者：$authorName
 朋友圈内容：「$momentContent」
+${run {
+    val medias = parseMomentMediaList(imageDesc)
+    val imgCount = medias.count { it.type == MomentMedia.Type.IMAGE }
+    val vidCount = medias.count { it.type == MomentMedia.Type.VIDEO }
+    if (medias.isNotEmpty()) buildString {
+        append("（本次动态配有")
+        if (imgCount > 0) append(" $imgCount 张图片")
+        if (vidCount > 0) append(" $vidCount 个视频")
+        append("）")
+    } else ""
+}}
 
 各角色背景及社交关系：
 $allCharInfo
@@ -295,24 +377,35 @@ $allCharInfo
 3. 严禁自行篡改、删减或漏掉任何格式标签。
 """.trimIndent()
 
+                // 图片 + 视频分别处理：图片原图base64；视频首帧缩略图base64（避免上传几十MB视频）
+                val allMedia = parseMomentMediaList(imageDesc)
                 val messagesArray = JSONArray().apply {
                     put(JSONObject().apply { put("role", "system"); put("content", sysPrompt) })
-                    if (imageDesc.startsWith("[REAL_IMG]")) {
+                    if (allMedia.isNotEmpty()) {
                         val contentArray = JSONArray()
-                        contentArray.put(JSONObject().apply { put("type", "text"); put("text", "请各角色立刻回应这条朋友圈，配图如下：") })
-                        try {
-                            val rawPath = imageDesc.replace("[REAL_IMG]", "")
-                            val inputStream = if (rawPath.startsWith("/")) {
-                                java.io.FileInputStream(rawPath)
-                            } else {
-                                context.contentResolver.openInputStream(android.net.Uri.parse(rawPath))
-                            }
-                            val bytes = inputStream?.readBytes(); inputStream?.close()
-                            if (bytes != null) {
-                                val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
-                                contentArray.put(JSONObject().apply { put("type", "image_url"); put("image_url", JSONObject().apply { put("url", "data:image/jpeg;base64,$base64") }) })
-                            }
-                        } catch (e: Exception) {}
+                        contentArray.put(JSONObject().apply { put("type", "text"); put("text", "请各角色立刻回应这条朋友圈。图片和视频如下（视频仅提供首帧缩略图）：") })
+                        for (m in allMedia) {
+                            try {
+                                val bytes = when (m.type) {
+                                    MomentMedia.Type.IMAGE -> {
+                                        openInputStreamSafe(context, m.path)?.readBytes()
+                                    }
+                                    MomentMedia.Type.VIDEO -> {
+                                        // 视频：只提取首帧，压缩成 JPEG 256KB 以内的缩略图
+                                        val bitmap = getVideoThumbnail(Uri.fromFile(File(m.path)), context)
+                                        if (bitmap != null) {
+                                            val baos = java.io.ByteArrayOutputStream()
+                                            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, baos)
+                                            baos.toByteArray()
+                                        } else null
+                                    }
+                                }
+                                if (bytes != null && bytes.size > 0) {
+                                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                                    contentArray.put(JSONObject().apply { put("type", "image_url"); put("image_url", JSONObject().apply { put("url", "data:image/jpeg;base64,$base64") }) })
+                                }
+                            } catch (e: Exception) {}
+                        }
                         put(JSONObject().apply { put("role", "user"); put("content", contentArray) })
                     } else {
                         put(JSONObject().apply { put("role", "user"); put("content", "请各角色立刻回应。") })
@@ -328,7 +421,7 @@ $allCharInfo
                 val response = client.newCall(request).execute()
                 val body = response.body?.string()
                 if (!response.isSuccessful || body == null) {
-                    notifyAutoReplyFailure("\u670b\u53cb\u5708\u81ea\u52a8\u56de\u5e94\u5931\u8d25")
+                    notifyAutoReplyFailure("朋友圈自动回应失败")
                     return@Thread
                 }
 
@@ -405,9 +498,116 @@ $allCharInfo
                 }
             } catch (e: Exception) {
                 Handler(Looper.getMainLooper()).post {
-                    Toast.makeText(context, "\u670b\u53cb\u5708\u81ea\u52a8\u56de\u5e94\u5931\u8d25", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "朋友圈自动回应失败", Toast.LENGTH_SHORT).show()
                 }
             }
         }.start()
+    }
+}
+
+/** 发布页九宫格媒体选择 Adapter：支持图片 + 视频混发，末尾追加【加图】【加视频】两个按钮 */
+class AddImageAdapter(
+    private val items: MutableList<MomentMedia>,
+    private val onAddImageClick: () -> Unit,
+    private val onAddVideoClick: () -> Unit,
+    private val onDeleteClick: (Int) -> Unit
+) : RecyclerView.Adapter<AddImageAdapter.VH>() {
+    companion object {
+        private const val TYPE_ITEM = 0   // 已选媒体（图/视频）
+        private const val TYPE_ADD_IMG = 1
+        private const val TYPE_ADD_VID = 2
+        private const val MAX_ITEMS = 9
+    }
+
+    class VH(view: View) : RecyclerView.ViewHolder(view) {
+        val ivPicked: ImageView = view.findViewById(R.id.ivPicked)
+        val layoutAdd: View = view.findViewById(R.id.layoutAdd)
+        val ivDelete: ImageView = view.findViewById(R.id.ivDelete)
+        val ivPlay: ImageView = view.findViewById(R.id.ivPlay)
+        val tvDuration: TextView = view.findViewById(R.id.tvDuration)
+        /** 给 layoutAdd 这个格子里的图标/文字动态改色，区分加图 vs 加视频 */
+        val addIcon: ImageView? = (layoutAdd as? LinearLayout)?.getChildAt(0) as? ImageView
+        val addText: TextView? = (layoutAdd as? LinearLayout)?.getChildAt(1) as? TextView
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_add_moment_image, parent, false)
+        return VH(view)
+    }
+
+    override fun getItemViewType(position: Int): Int = when {
+        position < items.size -> TYPE_ITEM
+        position == items.size -> TYPE_ADD_IMG
+        else -> TYPE_ADD_VID
+    }
+
+    override fun getItemCount(): Int {
+        if (items.size >= MAX_ITEMS) return items.size
+        // 两个添加按钮：加图 + 加视频
+        return items.size + 2
+    }
+
+    override fun onBindViewHolder(holder: VH, position: Int) {
+        when (getItemViewType(position)) {
+            TYPE_ADD_IMG -> {
+                applyAddStyle(holder, "加图片", android.graphics.Color.parseColor("#999999"))
+                holder.itemView.setOnClickListener { onAddImageClick() }
+            }
+            TYPE_ADD_VID -> {
+                applyAddStyle(holder, "加视频", android.graphics.Color.parseColor("#FF6F00"))
+                holder.itemView.setOnClickListener { onAddVideoClick() }
+            }
+            else -> {
+                // 已选的媒体
+                holder.layoutAdd.visibility = View.GONE
+                holder.ivPicked.visibility = View.VISIBLE
+                holder.ivDelete.visibility = View.VISIBLE
+                val media = items[position]
+                when (media.type) {
+                    MomentMedia.Type.IMAGE -> {
+                        holder.ivPlay.visibility = View.GONE
+                        holder.tvDuration.visibility = View.GONE
+                        try {
+                            val bitmap = android.graphics.BitmapFactory.decodeFile(media.path)
+                            if (bitmap != null) holder.ivPicked.setImageBitmap(bitmap)
+                            else holder.ivPicked.setBackgroundColor(android.graphics.Color.LTGRAY)
+                        } catch (e: Exception) {
+                            holder.ivPicked.setBackgroundColor(android.graphics.Color.LTGRAY)
+                        }
+                    }
+                    MomentMedia.Type.VIDEO -> {
+                        holder.ivPlay.visibility = View.VISIBLE
+                        holder.tvDuration.visibility = View.VISIBLE
+                        val ctx = holder.itemView.context
+                        try {
+                            val thumb = getVideoThumbnail(Uri.fromFile(java.io.File(media.path)), ctx)
+                            if (thumb != null) holder.ivPicked.setImageBitmap(thumb)
+                            else holder.ivPicked.setBackgroundColor(android.graphics.Color.parseColor("#444444"))
+                            val sec = getVideoDurationSec(Uri.fromFile(java.io.File(media.path)), ctx)
+                            holder.tvDuration.text = formatDuration(sec)
+                        } catch (e: Exception) {
+                            holder.ivPicked.setBackgroundColor(android.graphics.Color.parseColor("#444444"))
+                            holder.tvDuration.text = ""
+                        }
+                    }
+                }
+                holder.itemView.setOnClickListener(null)
+                holder.ivDelete.setOnClickListener {
+                    val pos = holder.adapterPosition
+                    if (pos != RecyclerView.NO_POSITION && pos < items.size) onDeleteClick(pos)
+                }
+            }
+        }
+    }
+
+    private fun applyAddStyle(holder: VH, label: String, tintColor: Int) {
+        holder.ivPicked.visibility = View.GONE
+        holder.ivDelete.visibility = View.GONE
+        holder.ivPlay.visibility = View.GONE
+        holder.tvDuration.visibility = View.GONE
+        holder.layoutAdd.visibility = View.VISIBLE
+        holder.addIcon?.setColorFilter(tintColor)
+        holder.addText?.text = label
+        holder.addText?.setTextColor(tintColor)
     }
 }

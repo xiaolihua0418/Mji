@@ -27,8 +27,8 @@ class SettingsActivity : AppCompatActivity() {
     private lateinit var switchDreamHouse: android.widget.Switch
     private lateinit var editImgNegativePrompt: EditText
     private lateinit var editImgUserPrompt: EditText
-    // ⚡ 抽出脑浆（导出存档）的引渡专员
-    private val exportDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
+    // ⚡ 抽出脑浆（导出存档）的引渡专员 —— 改为【导出整个 ZIP（含数据库+设置）】
+    private val exportDbLauncher = registerForActivityResult(ActivityResultContracts.CreateDocument("application/zip")) { uri ->
         if (uri != null) {
             try {
                 val dbFile = getDatabasePath("AiPhone.db")
@@ -37,31 +37,156 @@ class SettingsActivity : AppCompatActivity() {
                     return@registerForActivityResult
                 }
                 contentResolver.openOutputStream(uri)?.use { output ->
-                    java.io.FileInputStream(dbFile).use { input ->
-                        input.copyTo(output)
+                    val zos = java.util.zip.ZipOutputStream(java.io.BufferedOutputStream(output))
+                    // 1) 写入数据库文件 AiPhone.db
+                    zos.putNextEntry(java.util.zip.ZipEntry("AiPhone.db"))
+                    java.io.FileInputStream(dbFile).use { it.copyTo(zos) }
+                    zos.closeEntry()
+                    // 2) 写入 shared_prefs 下的全部设置 xml（角色/API/记忆配置全在里面）
+                    val prefsDir = File(applicationInfo.dataDir, "shared_prefs")
+                    if (prefsDir.exists()) {
+                        prefsDir.listFiles()?.filter { it.isFile && it.name.endsWith(".xml") }?.forEach { pf ->
+                            zos.putNextEntry(java.util.zip.ZipEntry("shared_prefs/${pf.name}"))
+                            java.io.FileInputStream(pf).use { it.copyTo(zos) }
+                            zos.closeEntry()
+                        }
                     }
+                    zos.finish()
+                    zos.flush()
                 }
-                Toast.makeText(this, "已存档", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "✅ 全量存档导出成功！已包含角色+记忆+设置", Toast.LENGTH_LONG).show()
             } catch (e: Exception) {
-                Toast.makeText(this, "导出暴毙: \${e.message}", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "导出暴毙: ${e.message}", Toast.LENGTH_LONG).show()
             }
         }
     }
 
-    // ⚡ 注入前世（导入存档）的夺舍专员
-    private val importDbLauncher = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) {
-            try {
-                val dbFile = getDatabasePath("AiPhone.db")
-                contentResolver.openInputStream(uri)?.use { input ->
-                    java.io.FileOutputStream(dbFile).use { output ->
-                        input.copyTo(output)
-                    }
-                }
-                Toast.makeText(this, "已读档，请重启", Toast.LENGTH_LONG).show()
-            } catch (e: Exception) {
-                Toast.makeText(this, "导入暴毙: \${e.message}", Toast.LENGTH_SHORT).show()
+    // 🧨 注入前世（导入存档）的夺舍专员
+    // 关键修复：不用 displayName 判断文件类型（Android 13+ 隐私限制常拿不到真实文件名），
+    // 改用读文件头 magic bytes 100% 准确识别：
+    //   ZIP = "PK"          |  SQLite db = "SQLite format ..."  |  XML = 第一个字节 '<'
+    private val importDbLauncher = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris == null || uris.isEmpty()) return@registerForActivityResult
+        try {
+            val dbFile = getDatabasePath("AiPhone.db")
+            val prefsDir = File(applicationInfo.dataDir, "shared_prefs")
+            if (!prefsDir.exists()) prefsDir.mkdirs()
+            var restoredDb = false
+            var restoredPrefsCount = 0
+            var skippedCount = 0
+
+            // 尝试从 ContentResolver 拿真实文件名（有些老设备能拿到），拿不到就用占位符
+            fun tryGetName(uri: Uri): String {
+                return try {
+                    contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+                        if (c.moveToFirst()) c.getString(0) ?: "" else ""
+                    } ?: ""
+                } catch (_: Exception) { "" }
             }
+
+            for (uri in uris) {
+                val displayName = tryGetName(uri)
+                // 另外从 Uri 路径里也尝试抠一下（Content://com.android.providers... 没用，但 FILE:// 有用）
+                val fallbackName = uri.lastPathSegment ?: ""
+
+                // 用临时文件读文件头（避免 InputStream 只能读一次的尴尬）
+                val tmp = java.io.File(cacheDir, "import_probe_${System.currentTimeMillis()}")
+                try {
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        java.io.FileOutputStream(tmp).use { output -> input.copyTo(output) }
+                    }
+                } catch (_: Exception) { continue }
+
+                if (!tmp.exists() || tmp.length() < 4) { skippedCount++; continue }
+
+                val head = ByteArray(8)
+                tmp.inputStream().use { it.read(head) }
+
+                // ① ZIP 整包：PK magic
+                if (head[0] == 0x50.toByte() && head[1] == 0x4B.toByte()) {
+                    java.util.zip.ZipInputStream(tmp.inputStream().buffered()).use { zis ->
+                        var entry: java.util.zip.ZipEntry?
+                        while (zis.nextEntry.also { entry = it } != null) {
+                            val name = entry!!.name
+                            when {
+                                name.equals("AiPhone.db", ignoreCase = true) -> {
+                                    java.io.FileOutputStream(dbFile).use { out -> zis.copyTo(out) }
+                                    restoredDb = true
+                                }
+                                name.endsWith("AiPhone.db", ignoreCase = true) -> {
+                                    java.io.FileOutputStream(dbFile).use { out -> zis.copyTo(out) }
+                                    restoredDb = true
+                                }
+                                name.contains("shared_prefs") && name.endsWith(".xml") -> {
+                                    val fname = name.substringAfterLast('/')
+                                    if (fname.isNotEmpty()) {
+                                        java.io.FileOutputStream(File(prefsDir, fname)).use { out -> zis.copyTo(out) }
+                                        restoredPrefsCount++
+                                    }
+                                }
+                                name.endsWith(".xml", ignoreCase = true) -> {
+                                    val fname = name.substringAfterLast('/')
+                                    if (fname.isNotEmpty() && !fname.endsWith("/")) {
+                                        java.io.FileOutputStream(File(prefsDir, fname)).use { out -> zis.copyTo(out) }
+                                        restoredPrefsCount++
+                                    }
+                                }
+                            }
+                            zis.closeEntry()
+                        }
+                    }
+                    tmp.delete(); continue
+                }
+
+                // ② SQLite db：magic = "SQLite format"
+                if (tmp.length() >= 16 &&
+                    head[0] == 0x53.toByte() && head[1] == 0x51.toByte() && head[2] == 0x4C.toByte() && head[3] == 0x69.toByte() &&
+                    tmp.inputStream().use { it.skip(6); val b = ByteArray(2); it.read(b); b[0] == 0x66.toByte() && b[1] == 0x6F.toByte() }) {
+                    tmp.copyTo(dbFile, overwrite = true)
+                    restoredDb = true
+                    tmp.delete(); continue
+                }
+
+                // ③ XML：第一个字节就是 '<' (0x3C) —— shared_prefs 里的配置文件全是这个开头
+                if (head[0] == 0x3C.toByte()) {
+                    // 优先用真实文件名，拿不到就用 fallback，再不行用占位
+                    val baseName = when {
+                        displayName.isNotBlank() -> displayName.substringAfterLast('/')
+                        fallbackName.isNotBlank() -> fallbackName
+                        else -> "pref_${System.currentTimeMillis()}.xml"
+                    }
+                    val fname = if (baseName.endsWith(".xml", ignoreCase = true)) baseName else "$baseName.xml"
+                    // shared_prefs 的 xml 必须叫 "XXX.xml" 才能被 getSharedPreferences("XXX") 读到！
+                    // 优先从 XML 内容里抠 name 属性（Android 默认会写 android:name 或 name）
+                    val content = tmp.readText()
+                    val realName = Regex("""(?:android:name|name)\s*=\s*"([^"]+)"""").find(content)?.groupValues?.get(1)
+                        ?: fname.removeSuffix(".xml")
+                    // 确保以 .xml 结尾
+                    val finalFileName = if (realName.endsWith(".xml", ignoreCase = true)) realName else "$realName.xml"
+                    tmp.copyTo(File(prefsDir, finalFileName), overwrite = true)
+                    restoredPrefsCount++
+                    tmp.delete(); continue
+                }
+
+                // 啥也不是，跳过
+                skippedCount++
+                tmp.delete()
+            }
+
+            val msg = buildString {
+                append("🔥 读档完成！")
+                if (restoredDb) append(" 数据库✓")
+                if (restoredPrefsCount > 0) append(" 配置(含MCP/门状态/API) x${restoredPrefsCount}✓")
+                if (!restoredDb && restoredPrefsCount == 0) append("（但没识别出可读内容，选个 db/xml/zip 哦）")
+                append(" 即将自杀重启以强行生效...")
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+            Thread {
+                Thread.sleep(1500)
+                kotlin.system.exitProcess(0)
+            }.start()
+        } catch (e: Exception) {
+            Toast.makeText(this, "导入暴毙: ${e.message}", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -439,10 +564,15 @@ class SettingsActivity : AppCompatActivity() {
         }
         btnBack.setOnClickListener { finish() }
 
+        // ✅ 改回旧版那套简单粗暴的方式：直接读写 Downloads/AiPhone_Backup
+        // 不用系统文件选择器（在用户手机上 OpenMultipleDocuments 不稳定）
+        // 只需要 MANAGE_EXTERNAL_STORAGE 权限（或者老的 WRITE_EXTERNAL_STORAGE）
         findViewById<TextView>(R.id.btnExportDatabase).setOnClickListener {
+            Toast.makeText(this, "📤 正在导出到 Downloads/AiPhone_Backup ...", Toast.LENGTH_SHORT).show()
             CyberBackupManager.backupAll(this)
         }
         findViewById<TextView>(R.id.btnImportDatabase).setOnClickListener {
+            Toast.makeText(this, "🧨 正在从 Downloads/AiPhone_Backup 载入...", Toast.LENGTH_SHORT).show()
             CyberBackupManager.restoreAll(this)
         }
     }

@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="2dp">
+
+    <ImageView
+        android:id="@+id/ivGridImage"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:background="#EEEEEE"
+        android:scaleType="centerCrop"
+        android:adjustViewBounds="false" />
+
+    <!-- ⭐ 视频播放按钮 -->
+    <ImageView
+        android:id="@+id/ivGridPlay"
+        android:layout_width="28dp"
+        android:layout_height="28dp"
+        android:layout_gravity="center"
+        android:src="@android:drawable/ic_media_play"
+        android:tint="#FFFFFF"
+        android:background="#80000000"
+        android:padding="5dp"
+        android:visibility="gone" />
+
+    <!-- ⭐ 视频时长 -->
+    <TextView
+        android:id="@+id/tvGridDuration"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="4dp"
+        android:background="#80000000"
+        android:paddingStart="5dp"
+        android:paddingEnd="5dp"
+        android:paddingTop="1dp"
+        android:paddingBottom="1dp"
+        android:textColor="#FFFFFF"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
+</FrameLayout>

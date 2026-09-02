@@ -203,13 +203,41 @@ $langNote
 """.trimIndent()
 
                     try {
+                        // 朋友圈配图（图片 + 视频首帧）也发给 LLM，让 AI 真正“看见”
+                        val allMedia = parseMomentMediaList(moment.imageDesc)
                         val bodyJson = JSONObject().apply {
                             put("model", model)
                             put("temperature", 0.65)
                             put("messages", JSONArray().apply {
                                 put(JSONObject().apply {
                                     put("role", "user")
-                                    put("content", sysPrompt)
+                                    if (allMedia.isNotEmpty()) {
+                                        val contentArray = JSONArray()
+                                        contentArray.put(JSONObject().apply { put("type", "text"); put("text", sysPrompt) })
+                                        for (m in allMedia) {
+                                            try {
+                                                val bytes = when (m.type) {
+                                                    MomentMedia.Type.IMAGE -> openInputStreamSafe(context, m.path)?.readBytes()
+                                                    MomentMedia.Type.VIDEO -> {
+                                                        // 视频：首帧缩略图压缩 JPEG，别传几十MB的视频base64
+                                                        val bitmap = getVideoThumbnail(Uri.fromFile(File(m.path)), context)
+                                                        if (bitmap != null) {
+                                                            val baos = java.io.ByteArrayOutputStream()
+                                                            bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 65, baos)
+                                                            baos.toByteArray()
+                                                        } else null
+                                                    }
+                                                }
+                                                if (bytes != null && bytes.size > 0) {
+                                                    val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                                                    contentArray.put(JSONObject().apply { put("type", "image_url"); put("image_url", JSONObject().apply { put("url", "data:image/jpeg;base64,$base64") }) })
+                                                }
+                                            } catch (e: Exception) {}
+                                        }
+                                        put("content", contentArray)
+                                    } else {
+                                        put("content", sysPrompt)
+                                    }
                                 })
                             })
                         }

@@ -6,6 +6,7 @@ import android.net.Uri
 import android.os.*
 import android.view.*
 import android.widget.*
+import androidx.recyclerview.widget.GridLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -34,6 +35,7 @@ class MomentAdapter(private val momentList: List<Moment>, private val onDataChan
         val tvTranslateBtn: TextView = view.findViewById(R.id.tvMomentTranslateBtn)
         val tvTranslatedText: TextView = view.findViewById(R.id.tvMomentTranslatedText)
         val ivRealImage: ImageView = view.findViewById(R.id.ivMomentRealImage)
+        val rvImages: RecyclerView = view.findViewById(R.id.rvMomentImages)
         val tvImage: TextView = view.findViewById(R.id.tvMomentImage)
         val tvTime: TextView = view.findViewById(R.id.tvMomentTime)
         val btnLike: TextView = view.findViewById(R.id.btnMomentLike)
@@ -42,6 +44,10 @@ class MomentAdapter(private val momentList: List<Moment>, private val onDataChan
         val tvLikes: TextView = view.findViewById(R.id.tvMomentLikes)
         val tvComments: TextView = view.findViewById(R.id.tvMomentComments)
         val tvCommentsTransBtn: TextView = view.findViewById(R.id.tvMomentCommentsTransBtn)
+        // 单张视频用的控件
+        val layoutSingle: FrameLayout = view.findViewById(R.id.layoutMomentSingleMedia)
+        val ivSinglePlay: ImageView = view.findViewById(R.id.ivMomentRealImagePlay)
+        val tvSingleDuration: TextView = view.findViewById(R.id.tvMomentRealImageDuration)
     }
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
@@ -74,29 +80,76 @@ class MomentAdapter(private val momentList: List<Moment>, private val onDataChan
             holder.tvTranslatedText.visibility = View.GONE
         }
 
-        if (moment.imageDesc.isNotEmpty()) {
-            if (moment.imageDesc.startsWith("[REAL_IMG]")) {
-                holder.tvImage.visibility = View.GONE
-                holder.ivRealImage.visibility = View.VISIBLE
-                try {
-                    val path = moment.imageDesc.replace("[REAL_IMG]", "")
-                    val bitmap = android.graphics.BitmapFactory.decodeFile(path)
-                    if (bitmap != null) {
-                        holder.ivRealImage.setImageBitmap(bitmap)
-                    } else {
-                        holder.ivRealImage.setBackgroundColor(android.graphics.Color.LTGRAY)
+        // 图片/视频渲染：0 个隐藏；1 个大图（视频=首帧+播放按钮）；2-9 个九宫格；非 [REAL_IMG] 走 AI 文字描述
+        val allMedia = parseMomentMediaList(moment.imageDesc)
+        if (allMedia.isNotEmpty()) {
+            holder.tvImage.visibility = View.GONE
+            if (allMedia.size == 1) {
+                val only = allMedia[0]
+                // 单张：保留原大图样式（视频展示首帧+播放按钮+时长）
+                holder.rvImages.visibility = View.GONE
+                holder.layoutSingle.visibility = View.VISIBLE
+                holder.ivSinglePlay.visibility = View.GONE
+                holder.tvSingleDuration.visibility = View.GONE
+                when (only.type) {
+                    MomentMedia.Type.IMAGE -> {
+                        try {
+                            val bitmap = android.graphics.BitmapFactory.decodeFile(only.path)
+                            if (bitmap != null) holder.ivRealImage.setImageBitmap(bitmap)
+                            else holder.ivRealImage.setBackgroundColor(android.graphics.Color.LTGRAY)
+                        } catch (e: Exception) {
+                            holder.ivRealImage.setBackgroundColor(android.graphics.Color.LTGRAY)
+                        }
+                        holder.ivRealImage.setOnClickListener { openImageViewer(holder.itemView.context, only.path) }
                     }
-                } catch (e: Exception) {
-                    holder.ivRealImage.setBackgroundColor(android.graphics.Color.LTGRAY)
+                    MomentMedia.Type.VIDEO -> {
+                        val ctx = holder.itemView.context
+                        try {
+                            val thumb = getVideoThumbnail(Uri.fromFile(File(only.path)), ctx)
+                            if (thumb != null) holder.ivRealImage.setImageBitmap(thumb)
+                            else holder.ivRealImage.setBackgroundColor(android.graphics.Color.parseColor("#444444"))
+                            val sec = getVideoDurationSec(Uri.fromFile(File(only.path)), ctx)
+                            if (sec > 0) {
+                                holder.tvSingleDuration.text = formatDuration(sec)
+                                holder.tvSingleDuration.visibility = View.VISIBLE
+                            }
+                            holder.ivSinglePlay.visibility = View.VISIBLE
+                        } catch (e: Exception) {
+                            holder.ivRealImage.setBackgroundColor(android.graphics.Color.parseColor("#444444"))
+                        }
+                        holder.ivRealImage.setOnClickListener { openVideoPlayer(holder.itemView.context, only.path) }
+                    }
                 }
             } else {
-                holder.ivRealImage.visibility = View.GONE
-                holder.tvImage.visibility = View.VISIBLE
-                holder.tvImage.text = "🖼️ [图片] ${moment.imageDesc}"
+                // 多张：九宫格
+                holder.layoutSingle.visibility = View.GONE
+                holder.rvImages.visibility = View.VISIBLE
+                val spanCount = if (allMedia.size <= 4) 2 else 3
+                val ctx = holder.itemView.context
+                // 动态测量每个格子的边长（让九宫格是正方形），根据父宽/spanCount
+                holder.rvImages.post {
+                    val parentWidth = (holder.rvImages.parent as? View)?.width ?: 0
+                    if (parentWidth > 0) {
+                        val sizePerItem = (parentWidth - (spanCount + 1) * 4.dpToPx(ctx)) / spanCount
+                        val lm = GridLayoutManager(ctx, spanCount)
+                        holder.rvImages.layoutManager = lm
+                        holder.rvImages.adapter = MomentGridImageAdapter(allMedia, sizePerItem)
+                    } else {
+                        holder.rvImages.layoutManager = GridLayoutManager(ctx, spanCount)
+                        holder.rvImages.adapter = MomentGridImageAdapter(allMedia, 0)
+                    }
+                }
             }
+        } else if (moment.imageDesc.isNotEmpty()) {
+            // AI 生成的纯文字画面描述
+            holder.layoutSingle.visibility = View.GONE
+            holder.rvImages.visibility = View.GONE
+            holder.tvImage.visibility = View.VISIBLE
+            holder.tvImage.text = "🖼️ [图片] ${moment.imageDesc}"
         } else {
             holder.tvImage.visibility = View.GONE
-            holder.ivRealImage.visibility = View.GONE
+            holder.layoutSingle.visibility = View.GONE
+            holder.rvImages.visibility = View.GONE
         }
 
         holder.tvTime.text = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(moment.timestamp))
@@ -609,10 +662,37 @@ class MomentAdapter(private val momentList: List<Moment>, private val onDataChan
                     "你发了朋友圈『${moment.content}』，$myName 刚评论：『$myComment』"
                 val sysPrompt = "你是 $aiName，人设：$aiPersona。\n【核心记忆】：$cyberMemory\n${relNote}$momentCtx。请立刻反应！\n$langNote\n【规则】：\n1. 必须回评论，严格格式：【评论】评论内容${if (aiLang != "默认 (中文)" && requireTrans) "【翻译】中文翻译" else ""}\n2. 可选额外私聊，严格格式：【私聊】私聊内容${if (aiLang != "默认 (中文)" && requireTrans) "【翻译】中文翻译" else ""}\n3. 【评论】和【私聊】必须分开，翻译只跟在各自内容后面，不要混淆。\n4. 严禁任何动作描写、*号动作、括号动作，只输出说出口的话。\n5. 评论要简短自然，不超过20字。评论语气必须严格符合你们的关系设定，不要超出关系范围。"
 
+                // 把朋友圈配图（多张）也发给 LLM，让 AI 真正“看见”图片再决定怎么回复评论
+                val imagePaths = parseMomentImagePaths(moment.imageDesc)
                 val jsonBody = JSONObject().apply {
                     put("model", model)
                     put("temperature", 0.85)
-                    put("messages", JSONArray().apply { put(JSONObject().apply { put("role", "user"); put("content", sysPrompt) }) })
+                    put("messages", JSONArray().apply {
+                        put(JSONObject().apply {
+                            put("role", "user")
+                            if (imagePaths.isNotEmpty()) {
+                                val contentArray = JSONArray()
+                                contentArray.put(JSONObject().apply { put("type", "text"); put("text", sysPrompt) })
+                                for (path in imagePaths) {
+                                    try {
+                                        val inputStream = if (path.startsWith("/")) {
+                                            java.io.FileInputStream(path)
+                                        } else {
+                                            context.contentResolver.openInputStream(android.net.Uri.parse(path))
+                                        }
+                                        val bytes = inputStream?.readBytes(); inputStream?.close()
+                                        if (bytes != null) {
+                                            val base64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP)
+                                            contentArray.put(JSONObject().apply { put("type", "image_url"); put("image_url", JSONObject().apply { put("url", "data:image/jpeg;base64,$base64") }) })
+                                        }
+                                    } catch (e: Exception) {}
+                                }
+                                put("content", contentArray)
+                            } else {
+                                put("content", sysPrompt)
+                            }
+                        })
+                    })
                 }
                 val req = Request.Builder().url(finalUrl).addHeader("Authorization", "Bearer $key")
                     .post(jsonBody.toString().toRequestBody("application/json".toMediaTypeOrNull())).build()
@@ -681,5 +761,131 @@ class MomentAdapter(private val momentList: List<Moment>, private val onDataChan
                 notifyReactionFailure("AI\u56de\u5e94\u5931\u8d25")
             }
         }.start()
+    }
+}
+
+// —— 打开图片查看器（系统 Intent） ——
+private fun openImageViewer(ctx: Context, path: String) {
+    try {
+        val f = File(path)
+        val uri: Uri = androidx.core.content.FileProvider.getUriForFile(
+            ctx,
+            ctx.packageName + ".fileprovider",
+            f
+        )
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "image/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (intent.resolveActivity(ctx.packageManager) != null) ctx.startActivity(intent)
+    } catch (e: Exception) {
+        // 没 FileProvider 的时候兜底 ACTION_VIEW 直接用
+        try {
+            val intent = Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(Uri.fromFile(File(path)), "image/*")
+            }
+            ctx.startActivity(intent)
+        } catch (e2: Exception) {
+            Toast.makeText(ctx, "无法打开图片：${e.message}", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
+// —— 打开视频播放器（系统 Intent） ——
+private fun openVideoPlayer(ctx: Context, path: String) {
+    try {
+        val f = File(path)
+        val uri: Uri = androidx.core.content.FileProvider.getUriForFile(
+            ctx,
+            ctx.packageName + ".fileprovider",
+            f
+        )
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(uri, "video/*")
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        if (intent.resolveActivity(ctx.packageManager) != null) {
+            ctx.startActivity(intent)
+            return
+        }
+    } catch (e: Exception) {}
+    try {
+        val intent = Intent(Intent.ACTION_VIEW).apply {
+            setDataAndType(Uri.fromFile(File(path)), "video/*")
+        }
+        ctx.startActivity(intent)
+    } catch (e: Exception) {
+        Toast.makeText(ctx, "无法打开视频：${e.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
+// —— 一些扩展工具 ——
+private fun Int.dpToPx(ctx: Context): Int =
+    (this * ctx.resources.displayMetrics.density).toInt()
+
+/** 解析朋友圈 imageDesc 字段为真实图片路径列表（兼容旧数据）—— 只返回图片，不给视频 */
+fun parseMomentImagePaths(imageDesc: String): List<String> =
+    parseMomentMediaList(imageDesc).filter { it.type == MomentMedia.Type.IMAGE }.map { it.path }
+
+/** 朋友圈列表里的多图九宫格 Adapter：支持图+视频混排，点击跳播放器/查看器 */
+class MomentGridImageAdapter(
+    private val items: List<MomentMedia>,
+    private val itemSizePx: Int
+) : RecyclerView.Adapter<MomentGridImageAdapter.VH>() {
+    class VH(view: View) : RecyclerView.ViewHolder(view) {
+        val iv: ImageView = view.findViewById(R.id.ivGridImage)
+        val ivPlay: ImageView = view.findViewById(R.id.ivGridPlay)
+        val tvDuration: TextView = view.findViewById(R.id.tvGridDuration)
+    }
+
+    override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): VH {
+        val view = LayoutInflater.from(parent.context).inflate(R.layout.item_moment_image, parent, false)
+        return VH(view)
+    }
+
+    override fun getItemCount() = items.size
+
+    override fun onBindViewHolder(holder: VH, position: Int) {
+        val ctx = holder.itemView.context
+        // 正方形尺寸（如果传了就强制）
+        if (itemSizePx > 0) {
+            holder.itemView.layoutParams = holder.itemView.layoutParams?.apply {
+                width = itemSizePx
+                height = itemSizePx
+            }
+            holder.iv.layoutParams = holder.iv.layoutParams?.apply {
+                width = ViewGroup.LayoutParams.MATCH_PARENT
+                height = ViewGroup.LayoutParams.MATCH_PARENT
+            }
+        }
+        val m = items[position]
+        holder.ivPlay.visibility = View.GONE
+        holder.tvDuration.visibility = View.GONE
+        when (m.type) {
+            MomentMedia.Type.IMAGE -> {
+                try {
+                    val bm = android.graphics.BitmapFactory.decodeFile(m.path)
+                    if (bm != null) holder.iv.setImageBitmap(bm)
+                    else holder.iv.setBackgroundColor(android.graphics.Color.LTGRAY)
+                } catch (e: Exception) { holder.iv.setBackgroundColor(android.graphics.Color.LTGRAY) }
+                holder.itemView.setOnClickListener { openImageViewer(ctx, m.path) }
+            }
+            MomentMedia.Type.VIDEO -> {
+                try {
+                    val thumb = getVideoThumbnail(Uri.fromFile(File(m.path)), ctx)
+                    if (thumb != null) holder.iv.setImageBitmap(thumb)
+                    else holder.iv.setBackgroundColor(android.graphics.Color.parseColor("#444444"))
+                    val sec = getVideoDurationSec(Uri.fromFile(File(m.path)), ctx)
+                    if (sec > 0) {
+                        holder.tvDuration.text = formatDuration(sec)
+                        holder.tvDuration.visibility = View.VISIBLE
+                    }
+                    holder.ivPlay.visibility = View.VISIBLE
+                } catch (e: Exception) {
+                    holder.iv.setBackgroundColor(android.graphics.Color.parseColor("#444444"))
+                }
+                holder.itemView.setOnClickListener { openVideoPlayer(ctx, m.path) }
+            }
+        }
     }
 }

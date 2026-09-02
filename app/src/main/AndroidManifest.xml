@@ -126,6 +126,17 @@
         <activity android:name=".PhoneViewActivity" />
         <activity android:name=".OfflineSetupActivity" />
 
+        <!-- ⭐ FileProvider：APP 私有目录里的图片/视频分享给系统播放器/查看器必须走这个 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
 
         <service
             android:name=".PatienceService"
